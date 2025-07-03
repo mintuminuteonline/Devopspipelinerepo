@@ -15,59 +15,72 @@ variables:
   devStackName: 'MyEC2CftStack-Dev' # Name of the CloudFormation stack for Dev
   prodStackName: 'MyEC2CftStack-Prod' # Name of the CloudFormation stack for Prod
 
-jobs:
-  - job: CI
-    displayName: 'Validate Template'
-    steps:
-      - checkout: self
-        displayName: 'Checkout Code'
-      - task: AWSShellScript@1
+stages:
+  - stage: CI_Validation
+    displayName: 'CI - Validate Template'
+    jobs:
+      - job: ValidateTemplate
         displayName: 'Validate CloudFormation Template'
-        inputs:
-          awsCredentials: '$(awsServiceConnection)'
-          regionName: '$(awsRegion)'
-          scriptType: 'inline'
-          inlineScript: |
-            aws cloudformation validate-template --template-body file://$(templatePath)
+        steps:
+          - checkout: self
+            displayName: 'Checkout Code'
+          - task: AWSShellScript@1
+            displayName: 'Validate CloudFormation Template'
+            inputs:
+              awsCredentials: '$(awsServiceConnection)'
+              regionName: '$(awsRegion)'
+              scriptType: 'inline'
+              inlineScript: |
+                aws cloudformation validate-template --template-body file://$(templatePath)
 
-  - job: CD_Dev
-    displayName: 'Deploy to AWS Dev'
-    dependsOn: CI
-    condition: succeeded() # Run only if CI succeeds
-    steps:
-      - checkout: self
-        displayName: 'Checkout Code'
-      - task: AWSShellScript@1
-        displayName: 'Deploy CloudFormation Stack to Dev'
-        inputs:
-          awsCredentials: '$(awsServiceConnection)'
-          regionName: '$(awsRegion)'
-          scriptType: 'inline'
-          inlineScript: |
-            aws cloudformation deploy \
-              --template-file $(templatePath) \
-              --stack-name $(devStackName) \
-              --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM
+  - stage: Deploy_to_Dev
+    displayName: 'Deploy to Dev Environment'
+    dependsOn: CI_Validation # This stage depends on the CI_Validation stage
+    condition: succeeded() # Run only if the previous stage (CI_Validation) succeeds
+    jobs:
+      - deployment: DeployDev
+        displayName: 'Deploy to AWS Dev'
+        environment: 'Dev' # References the Dev environment in Azure DevOps
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                  displayName: 'Checkout Code'
+                - task: AWSShellScript@1
+                  displayName: 'Deploy CloudFormation Stack to Dev'
+                  inputs:
+                    awsCredentials: '$(awsServiceConnection)'
+                    regionName: '$(awsRegion)'
+                    scriptType: 'inline'
+                    inlineScript: |
+                      aws cloudformation deploy \
+                        --template-file $(templatePath) \
+                        --stack-name $(devStackName) \
+                        --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM
 
-  - deployment: CD_Prod
-    displayName: 'Deploy to AWS Prod'
-    dependsOn: CD_Dev
-    condition: succeeded() # Run only if CD_Dev succeeds
-    environment: 'Prod' # References the Prod environment in Azure DevOps
-    strategy:
-      runOnce:
-        deploy:
-          steps:
-            - checkout: self
-              displayName: 'Checkout Code'
-            - task: AWSShellScript@1
-              displayName: 'Deploy CloudFormation Stack to Prod'
-              inputs:
-                awsCredentials: '$(awsServiceConnection)'
-                regionName: '$(awsRegion)'
-                scriptType: 'inline'
-                inlineScript: |
-                  aws cloudformation deploy \
-                    --template-file $(templatePath) \
-                    --stack-name $(prodStackName) \
-                    --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM
+  - stage: Deploy_to_Prod
+    displayName: 'Deploy to Prod Environment'
+    dependsOn: Deploy_to_Dev # This stage depends on the Deploy_to_Dev stage
+    condition: succeeded() # Run only if the previous stage (Deploy_to_Dev) succeeds
+    jobs:
+      - deployment: DeployProd
+        displayName: 'Deploy to AWS Prod'
+        environment: 'Prod' # References the Prod environment in Azure DevOps. This environment should have approvals configured.
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                  displayName: 'Checkout Code'
+                - task: AWSShellScript@1
+                  displayName: 'Deploy CloudFormation Stack to Prod'
+                  inputs:
+                    awsCredentials: '$(awsServiceConnection)'
+                    regionName: '$(awsRegion)'
+                    scriptType: 'inline'
+                    inlineScript: |
+                      aws cloudformation deploy \
+                        --template-file $(templatePath) \
+                        --stack-name $(prodStackName) \
+                        --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM
