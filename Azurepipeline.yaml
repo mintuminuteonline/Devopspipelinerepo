@@ -12,7 +12,7 @@ variables:
   awsServiceConnection: 'aws-oidc-federation' # AWS service connection name
   awsRegion: 'us-east-1' # AWS region for deployment
   templatePath: '$(System.DefaultWorkingDirectory)/CloudfrontWithEc2.yaml' # Path to CloudFormation template
-  stackName: 'MyEC2CftStack' # Name of the CloudFormation stack
+  stackName: 'MyEC2CftStack' # Name of the CloudFormation stacks
 
 jobs:
   - job: CI
