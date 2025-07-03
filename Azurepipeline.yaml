@@ -1,4 +1,4 @@
-# Azure DevOps pipeline to validate and deploy an AWS CloudFormation template to Dev and Prod environments
+# Azure DevOps pipeline to validate and deploy an AWS CloudFormation template to Dev and Prod environmentss
 trigger:
   branches:
     include:
