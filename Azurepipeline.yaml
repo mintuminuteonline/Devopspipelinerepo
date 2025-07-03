@@ -33,7 +33,6 @@ jobs:
     displayName: 'Deploy to AWS'
     dependsOn: CI
     condition: succeeded() # Run only if CI succeeds
-    environment: 'dev' # Requires manual approval
     strategy:
       runOnce:
         deploy:
