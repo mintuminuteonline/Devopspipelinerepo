@@ -29,7 +29,7 @@ jobs:
           inlineScript: |
             aws cloudformation validate-template --template-body file://$(templatePath)
 
-  - deployment: CD
+  - job: CD
     displayName: 'Deploy to AWS'
     dependsOn: CI
     condition: succeeded() # Run only if CI succeeds
