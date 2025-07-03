@@ -1,4 +1,4 @@
-# Simple Azure DevOps pipeline to validate and deploy an AWS CloudFormation template
+# Azure DevOps pipeline to validate and deploy an AWS CloudFormation template to Dev and Prod environments
 trigger:
   branches:
     include:
@@ -12,7 +12,8 @@ variables:
   awsServiceConnection: 'aws-oidc-federation' # AWS service connection name
   awsRegion: 'us-east-1' # AWS region for deployment
   templatePath: '$(System.DefaultWorkingDirectory)/CloudfrontWithEc2.yaml' # Path to CloudFormation template
-  stackName: 'MyEC2CftStack' # Name of the CloudFormation stacks
+  devStackName: 'MyEC2CftStack-Dev' # Name of the CloudFormation stack for Dev
+  prodStackName: 'MyEC2CftStack-Prod' # Name of the CloudFormation stack for Prod
 
 jobs:
   - job: CI
@@ -29,15 +30,15 @@ jobs:
           inlineScript: |
             aws cloudformation validate-template --template-body file://$(templatePath)
 
-  - job: CD
-    displayName: 'Deploy to AWS'
+  - job: CD_Dev
+    displayName: 'Deploy to AWS Dev'
     dependsOn: CI
     condition: succeeded() # Run only if CI succeeds
     steps:
       - checkout: self
         displayName: 'Checkout Code'
       - task: AWSShellScript@1
-        displayName: 'Deploy CloudFormation Stack'
+        displayName: 'Deploy CloudFormation Stack to Dev'
         inputs:
           awsCredentials: '$(awsServiceConnection)'
           regionName: '$(awsRegion)'
@@ -45,5 +46,28 @@ jobs:
           inlineScript: |
             aws cloudformation deploy \
               --template-file $(templatePath) \
-              --stack-name $(stackName) \
+              --stack-name $(devStackName) \
               --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM
+
+  - deployment: CD_Prod
+    displayName: 'Deploy to AWS Prod'
+    dependsOn: CD_Dev
+    condition: succeeded() # Run only if CD_Dev succeeds
+    environment: 'Prod' # References the Prod environment in Azure DevOps
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+            - checkout: self
+              displayName: 'Checkout Code'
+            - task: AWSShellScript@1
+              displayName: 'Deploy CloudFormation Stack to Prod'
+              inputs:
+                awsCredentials: '$(awsServiceConnection)'
+                regionName: '$(awsRegion)'
+                scriptType: 'inline'
+                inlineScript: |
+                  aws cloudformation deploy \
+                    --template-file $(templatePath) \
+                    --stack-name $(prodStackName) \
+                    --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM
