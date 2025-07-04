@@ -1,4 +1,4 @@
-# Azure DevOps pipeline to validate and deploy an AWS CloudFormation template to Dev and Prod environmentss
+# Azure DevOps pipeline to validate and deploy an AWS CloudFormation template to Dev and Prod environments
 trigger:
   branches:
     include:
@@ -10,7 +10,8 @@ pool:
 
 variables:
   awsServiceConnection: 'aws-oidc-federation' # AWS service connection name
-  awsRegion: 'us-east-1' # AWS region for deployment
+  awsRegionDev: 'us-east-1' # AWS region for Dev deployment
+  awsRegionProd: 'us-west-2' # AWS region for Prod deployment (Oregon)
   templatePath: '$(System.DefaultWorkingDirectory)/CloudfrontWithEc2.yaml' # Path to CloudFormation template
   devStackName: 'MyEC2CftStack-Dev' # Name of the CloudFormation stack for Dev
   prodStackName: 'MyEC2CftStack-Prod' # Name of the CloudFormation stack for Prod
@@ -28,7 +29,8 @@ stages:
             displayName: 'Validate CloudFormation Template'
             inputs:
               awsCredentials: '$(awsServiceConnection)'
-              regionName: '$(awsRegion)'
+              # For validation, we can use the dev region or any valid region, as template validation is not region-specific for syntax
+              regionName: '$(awsRegionDev)'
               scriptType: 'inline'
               inlineScript: |
                 aws cloudformation validate-template --template-body file://$(templatePath)
@@ -51,7 +53,7 @@ stages:
                   displayName: 'Deploy CloudFormation Stack to Dev'
                   inputs:
                     awsCredentials: '$(awsServiceConnection)'
-                    regionName: '$(awsRegion)'
+                    regionName: '$(awsRegionDev)' # Using the Dev specific region variable
                     scriptType: 'inline'
                     inlineScript: |
                       aws cloudformation deploy \
@@ -77,7 +79,7 @@ stages:
                   displayName: 'Deploy CloudFormation Stack to Prod'
                   inputs:
                     awsCredentials: '$(awsServiceConnection)'
-                    regionName: '$(awsRegion)'
+                    regionName: '$(awsRegionProd)' # **Using the Prod specific region variable for Oregon**
                     scriptType: 'inline'
                     inlineScript: |
                       aws cloudformation deploy \
