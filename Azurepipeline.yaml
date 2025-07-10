@@ -11,7 +11,7 @@ pool:
 variables:
   awsServiceConnection: 'aws-oidc-federation'
   awsRegion: 'us-east-1'
-  templatePath: '$(System.DefaultWorkingDirectory)/CloudfrontWithEc2AndALB.yaml'
+  templatePath: '$(System.DefaultWorkingDirectory)/CloudfrontWithEc2.yaml'
   devStackName: 'MyEC2CftStack-Dev'
   prodStackName: 'MyEC2CftStack-Prod'
 
