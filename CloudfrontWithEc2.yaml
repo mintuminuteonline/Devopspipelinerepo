@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: 2010-09-09
-Description: Creates a CloudFront distribution with an EC2 instance as the origin, including VPC, subnet, and security group
+Description: Creates a CloudFront distribution with an Application Load Balancer and EC2 instance as the origin, including VPC, subnet, and security group
 
 Resources:
   MyVPC:
@@ -29,12 +29,23 @@ Resources:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref MyVPC
-      CidrBlock: 10.0.1.0/24
-      AvailabilityZone: us-east-1a  # Replace if needed
+      CidrBlock: 172.31.32.0/20
+      AvailabilityZone: us-east-1a
       MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
           Value: cloudfront-public-subnet
+
+  MyPublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref MyVPC
+      CidrBlock: 172.31.64.0/20
+      AvailabilityZone: us-east-1b
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: cloudfront-public-subnet-2
 
   MyRouteTable:
     Type: AWS::EC2::RouteTable
@@ -57,28 +68,52 @@ Resources:
       SubnetId: !Ref MyPublicSubnet
       RouteTableId: !Ref MyRouteTable
 
+  SubnetRouteTableAssociation2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref MyPublicSubnet2
+      RouteTableId: !Ref MyRouteTable
+
   WebSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Security group for EC2 to allow HTTP/HTTPS from CloudFront
+      GroupDescription: Security group for EC2 to allow HTTP from ALB
       VpcId: !Ref MyVPC
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 80
           ToPort: 80
-          CidrIp: 0.0.0.0/0  # CloudFront IPs (restrict if needed)
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
         - IpProtocol: tcp
           FromPort: 22
           ToPort: 22
-          CidrIp: 0.0.0.0/0  # Restrict to your IP for SSH
+          CidrIp: 0.0.0.0/0
       Tags:
         - Key: Name
           Value: cloudfront-ec2-sg
 
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for ALB to allow HTTP/HTTPS
+      VpcId: !Ref MyVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: cloudfront-alb-sg
+
   MyEC2Instance:
     Type: AWS::EC2::Instance
     Properties:
-      ImageId: ami-05ffe3c48a9991133  # Amazon Linux 2 (us-east-1, replace if needed)
+      ImageId: ami-05ffe3c48a9991133
       InstanceType: t2.micro
       SecurityGroupIds:
         - !Ref WebSecurityGroup
@@ -95,18 +130,57 @@ Resources:
         - Key: Name
           Value: cloudfront-ec2-instance
 
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Subnets:
+        - !Ref MyPublicSubnet
+        - !Ref MyPublicSubnet2
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+      Scheme: internet-facing
+      Type: application
+      Tags:
+        - Key: Name
+          Value: cloudfront-alb
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ALBTargetGroup
+
+  ALBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref MyVPC
+      Port: 80
+      Protocol: HTTP
+      TargetType: instance
+      Targets:
+        - Id: !Ref MyEC2Instance
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: /index.html
+      Tags:
+        - Key: Name
+          Value: cloudfront-alb-tg
+
   CloudFrontDistribution:
     Type: AWS::CloudFront::Distribution
     Properties:
       DistributionConfig:
         Origins:
-          - DomainName: !GetAtt MyEC2Instance.PublicDnsName
-            Id: EC2Origin
+          - DomainName: !GetAtt ApplicationLoadBalancer.DNSName
+            Id: ALBOrigin
             CustomOriginConfig:
               OriginProtocolPolicy: http-only
         Enabled: true
         DefaultCacheBehavior:
-          TargetOriginId: EC2Origin
+          TargetOriginId: ALBOrigin
           ViewerProtocolPolicy: redirect-to-https
           ForwardedValues:
             QueryString: false
@@ -132,8 +206,17 @@ Outputs:
     Description: ID of the created VPC
     Value: !Ref MyVPC
   SubnetId:
-    Description: ID of the public subnet
+    Description: ID of the first public subnet
     Value: !Ref MyPublicSubnet
+  SubnetId2:
+    Description: ID of the second public subnet
+    Value: !Ref MyPublicSubnet2
   SecurityGroupId:
-    Description: ID of the security group
+    Description: ID of the EC2 security group
     Value: !Ref WebSecurityGroup
+  ALBSecurityGroupId:
+    Description: ID of the ALB security group
+    Value: !Ref ALBSecurityGroup
+  ALBDNSName:
+    Description: DNS name of the Application Load Balancer
+    Value: !GetAtt ApplicationLoadBalancer.DNSName
