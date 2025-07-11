@@ -1,4 +1,3 @@
-# Azure DevOps pipeline to validate and deploy an AWS CloudFormation template to Dev and Prod environments
 trigger:
   branches:
     include:
@@ -9,38 +8,23 @@ pool:
   vmImage: 'ubuntu-latest'
 
 variables:
-  awsServiceConnection: 'aws-oidc-federation'
-  awsRegion: 'us-east-1'
-  templatePath: '$(System.DefaultWorkingDirectory)/CloudfrontWithEc2.yaml'
-  devStackName: 'MyEC2CftStack-Dev'
-  prodStackName: 'MyEC2CftStack-Prod'
+  awsServiceConnection: 'aws-oidc-federation' # AWS service connection name
+  awsRegion: 'us-east-1' # AWS region for deployment
+  sonarQubeTemplatePath: '$(System.DefaultWorkingDirectory)/sonarqube-stack-public-only.yaml' # Path to SonarQube CFT
+  sonarQubeStackName: 'SonarQubeStackPublicOnly' # Stack name
+  vpcId: 'vpc-093582a4fa8c1828e' # Replace with your VPC ID
+  publicSubnetId: 'subnet-0601e2496fa2b037b' # Replace with your public subnet ID
+  keyName: 'delivery-keypair' # Replace with your EC2 key pair name
+  dbPassword: 'MySecurePass123' # Replace with a secure password
+  allowedCidrIp: '0.0.0.0/0' # Restrict to Azure DevOps IP range for production
 
 stages:
-  - stage: CI_Validation
-    displayName: 'CI - Validate Template'
+  - stage: Deploy_SonarQube
+    displayName: 'Deploy SonarQube Stack'
     jobs:
-      - job: ValidateTemplate
-        displayName: 'Validate CloudFormation Template'
-        steps:
-          - checkout: self
-            displayName: 'Checkout Code'
-          - task: AWSShellScript@1
-            displayName: 'Validate CloudFormation Template'
-            inputs:
-              awsCredentials: '$(awsServiceConnection)'
-              regionName: '$(awsRegion)'
-              scriptType: 'inline'
-              inlineScript: |
-                aws cloudformation validate-template --template-body file://$(templatePath)
-
-  - stage: Deploy_to_Dev
-    displayName: 'Deploy to Dev Environment'
-    dependsOn: CI_Validation
-    condition: succeeded()
-    jobs:
-      - deployment: DeployDev
-        displayName: 'Deploy to AWS Dev'
-        environment: 'Dev'
+      - deployment: DeploySonarQube
+        displayName: 'Deploy SonarQube to AWS'
+        environment: 'SonarQube'
         strategy:
           runOnce:
             deploy:
@@ -48,39 +32,32 @@ stages:
                 - checkout: self
                   displayName: 'Checkout Code'
                 - task: AWSShellScript@1
-                  displayName: 'Deploy CloudFormation Stack to Dev'
+                  displayName: 'Deploy SonarQube CloudFormation Stack'
                   inputs:
                     awsCredentials: '$(awsServiceConnection)'
                     regionName: '$(awsRegion)'
                     scriptType: 'inline'
                     inlineScript: |
                       aws cloudformation deploy \
-                        --template-file $(templatePath) \
-                        --stack-name $(devStackName) \
-                        --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM
-
-  - stage: Deploy_to_Prod
-    displayName: 'Deploy to Prod Environment'
-    dependsOn: Deploy_to_Dev
-    condition: succeeded()
-    jobs:
-      - deployment: DeployProd
-        displayName: 'Deploy to AWS Prod'
-        environment: 'Prod'
-        strategy:
-          runOnce:
-            deploy:
-              steps:
-                - checkout: self
-                  displayName: 'Checkout Code'
+                        --template-file $(sonarQubeTemplatePath) \
+                        --stack-name $(sonarQubeStackName) \
+                        --parameter-overrides \
+                          VpcId=$(vpcId) \
+                          PublicSubnetId=$(publicSubnetId) \
+                          KeyName=$(keyName) \
+                          DBPassword=$(dbPassword) \
+                          AllowedCidrIp=$(allowedCidrIp) \
+                        --capabilities CAPABILITY_NAMED_IAM
                 - task: AWSShellScript@1
-                  displayName: 'Deploy CloudFormation Stack to Prod'
+                  displayName: 'Get SonarQube URL'
                   inputs:
                     awsCredentials: '$(awsServiceConnection)'
                     regionName: '$(awsRegion)'
                     scriptType: 'inline'
                     inlineScript: |
-                      aws cloudformation deploy \
-                        --template-file $(templatePath) \
-                        --stack-name $(prodStackName) \
-                        --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM
+                      SONARQUBE_URL=$(aws cloudformation describe-stacks \
+                        --stack-name $(sonarQubeStackName) \
+                        --query 'Stacks[0].Outputs[?OutputKey==`SonarQubeURL`].OutputValue' \
+                        --output text)
+                      echo "##vso[task.setvariable variable=sonarQubeUrl;isOutput=true]$SONARQUBE_URL"
+                  name: setSonarQubeUrl

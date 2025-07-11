@@ -1,0 +1,260 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: CloudFormation template to deploy SonarQube on EC2 and PostgreSQL RDS in a public subnet, with daily backups and port 9000 open for Azure DevOps (without ALB)
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID where SonarQube and RDS will be deployed
+  PublicSubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Public subnet for EC2 and RDS instances
+  InstanceType:
+    Type: String
+    Default: t3.medium
+    AllowedValues: [t3.medium, t3.large]
+    Description: EC2 instance type for SonarQube
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Key pair for SSH access to EC2
+  SonarQubeVersion:
+    Type: String
+    Default: 10.5.0.91510
+    Description: SonarQube version to install
+  DBInstanceClass:
+    Type: String
+    Default: db.t3.micro
+    Description: RDS instance class
+  DBAllocatedStorage:
+    Type: Number
+    Default: 20
+    Description: RDS allocated storage in GB
+  DBName:
+    Type: String
+    Default: sonarqubedb
+    Description: Name of the PostgreSQL database
+  DBUsername:
+    Type: String
+    Default: sonar
+    Description: PostgreSQL database username
+  DBPassword:
+    Type: String
+    NoEcho: true
+    Description: PostgreSQL database password (minimum 8 characters)
+    MinLength: 8
+  AllowedCidrIp:
+    Type: String
+    Default: 0.0.0.0/0
+    Description: CIDR range for accessing SonarQube on port 9000 (restrict to Azure DevOps IPs for production)
+
+Resources:
+  # Security Group for EC2 Instance
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: sonarqube-ec2-sg
+      GroupDescription: Security group for SonarQube EC2 instance
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0 # Restrict to your IP for production
+        - IpProtocol: tcp
+          FromPort: 9000
+          ToPort: 9000
+          CidrIp: !Ref AllowedCidrIp
+      Tags:
+        - Key: Name
+          Value: sonarqube-ec2-sg
+
+  # Security Group for RDS
+  RDSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: sonarqube-rds-sg
+      GroupDescription: Security group for SonarQube RDS
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref EC2SecurityGroup
+      Tags:
+        - Key: Name
+          Value: sonarqube-rds-sg
+
+  # IAM Role for EC2
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: sonarqube-ec2-role
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: sonarqube-ec2-policy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref RDSSecret
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: sonarqube-ec2-profile
+      Roles:
+        - !Ref EC2Role
+
+  # RDS Subnet Group
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnet group for SonarQube RDS
+      SubnetIds:
+        - !Ref PublicSubnetId
+        - !Ref PublicSubnetId # Use same public subnet for simplicity
+      Tags:
+        - Key: Name
+          Value: sonarqube-rds-subnet-group
+
+  # RDS Secret for Database Credentials
+  RDSSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: sonarqube-rds-credentials
+      Description: SonarQube RDS database credentials
+      SecretString: !Sub '{"username":"${DBUsername}","password":"${DBPassword}"}'
+
+  # RDS Instance with Daily Backups
+  RDSInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBName: !Ref DBName
+      Engine: postgres
+      EngineVersion: "16.3"
+      DBInstanceClass: !Ref DBInstanceClass
+      AllocatedStorage: !Ref DBAllocatedStorage
+      StorageType: gp2
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VPCSecurityGroups:
+        - !Ref RDSSecurityGroup
+      MultiAZ: false
+      PubliclyAccessible: true # Make RDS publicly accessible
+      MasterUsername: !Ref DBUsername
+      MasterUserPassword: !Join ["", ["{{resolve:secretsmanager:", !Ref RDSSecret, ":SecretString:password}}"]]
+      BackupRetentionPeriod: 7 # Daily backups for 7 days
+      PreferredBackupWindow: "03:00-04:00" # UTC backup window
+      AutoMinorVersionUpgrade: true
+      Tags:
+        - Key: Name
+          Value: sonarqube-rds
+    DependsOn: RDSSecret
+
+  # Elastic IP for EC2
+  ElasticIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  # Associate Elastic IP with EC2
+  EIPAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      InstanceId: !Ref EC2Instance
+      EIP: !Ref ElasticIP
+
+  # EC2 Instance for SonarQube
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+      ImageId: ami-05ffe3c48a9991133 # Ubuntu 24.04 LTS in us-east-1
+      SubnetId: !Ref PublicSubnetId
+      SecurityGroupIds:
+        - !Ref EC2SecurityGroup
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 20
+            VolumeType: gp2
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          apt-get update -y
+          apt-get upgrade -y
+          apt-get install -y openjdk-17-jdk unzip awscli
+          # Install PostgreSQL client
+          sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+          wget -q -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add -
+          apt-get update -y
+          apt-get install -y postgresql-client
+          # Configure system limits
+          echo "vm.max_map_count=262144" >> /etc/sysctl.conf
+          echo "fs.file-max=65536" >> /etc/sysctl.conf
+          sysctl -p
+          echo "* soft nofile 65536" >> /etc/security/limits.conf
+          echo "* hard nofile 65536" >> /etc/security/limits.conf
+          # Create SonarQube user
+          groupadd sonarqube
+          useradd -g sonarqube -d /opt/sonarqube sonarqube
+          # Download and install SonarQube
+          cd /opt
+          wget https://binaries.sonarsource.com/Distribution/sonarqube/sonarqube-${SonarQubeVersion}.zip
+          unzip sonarqube-${SonarQubeVersion}.zip
+          mv sonarqube-${SonarQubeVersion} sonarqube
+          chown -R sonarqube:sonarqube /opt/sonarqube
+          # Configure SonarQube
+          cat << EOF > /opt/sonarqube/conf/sonar.properties
+          sonar.web.port=9000
+          sonar.jdbc.username=${DBUsername}
+          sonar.jdbc.password=$(aws secretsmanager get-secret-value --secret-id ${RDSSecret} --query SecretString --output text | jq -r .password)
+          sonar.jdbc.url=jdbc:postgresql://${RDSInstance.Endpoint.Address}:5432/${DBName}
+          EOF
+          # Set SonarQube to run as sonarqube user
+          sed -i 's/#RUN_AS_USER=/RUN_AS_USER=sonarqube/' /opt/sonarqube/bin/linux-x86-64/sonar.sh
+          # Create systemd service
+          cat << EOF > /etc/systemd/system/sonarqube.service
+          [Unit]
+          Description=SonarQube service
+          After=network.target
+          [Service]
+          Type=forking
+          ExecStart=/opt/sonarqube/bin/linux-x86-64/sonar.sh start
+          ExecStop=/opt/sonarqube/bin/linux-x86-64/sonar.sh stop
+          User=sonarqube
+          Group=sonarqube
+          LimitNOFILE=65536
+          LimitNPROC=8192
+          Restart=always
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+          # Start SonarQube service
+          systemctl daemon-reload
+          systemctl enable sonarqube
+          systemctl start sonarqube
+      Tags:
+        - Key: Name
+          Value: sonarqube-ec2
+
+Outputs:
+  SonarQubeURL:
+    Description: URL to access SonarQube
+    Value: !Sub "http://${ElasticIP}:9000"
+  RDSInstanceEndpoint:
+    Description: Endpoint of the RDS instance
+    Value: !GetAtt RDSInstance.Endpoint.Address
+  EC2InstancePublicIP:
+    Description: Public IP of the EC2 instance (for SSH and SonarQube access)
+    Value: !Ref ElasticIP
