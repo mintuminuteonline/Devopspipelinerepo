@@ -11,7 +11,7 @@ pool:
 variables:
   awsServiceConnection: 'aws-oidc-federation' # AWS service connection name
   awsRegion: 'us-east-1' # AWS region for deployment
-  sonarQubeTemplatePath: '$(System.DefaultWorkingDirectory)/sonarqube-stack-public-only-two-az.yaml' # Path to updated SonarQube CFT
+  sonarQubeTemplatePath: '$(System.DefaultWorkingDirectory)/sonarqube-stack-public-only.yaml' # Path to updated SonarQube CFT
   sonarQubeStackName: 'SonarQubeStackPublicOnly' # Stack name
   vpcId: 'vpc-093582a4fa8c1828e' # Your VPC ID
   publicSubnetId: 'subnet-0601e2496fa2b037b' # Your first public subnet ID (e.g., us-east-1c)
