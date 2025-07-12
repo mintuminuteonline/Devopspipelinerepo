@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: 2010-09-09
-Description: CloudFormation template to deploy SonarQube on EC2 and PostgreSQL RDS in a public subnet, with daily backups and port 9000 open for Azure DevOps (without ALB)
+Description: CloudFormation template to deploy SonarQube on EC2 and PostgreSQL RDS in public subnets across two AZs, with daily backups and port 9000 open for Azure DevOps (without ALB)
 
 Parameters:
   VpcId:
@@ -7,7 +7,10 @@ Parameters:
     Description: VPC ID where SonarQube and RDS will be deployed
   PublicSubnetId:
     Type: AWS::EC2::Subnet::Id
-    Description: Public subnet for EC2 and RDS instances
+    Description: First public subnet (in one AZ) for EC2 and RDS
+  PublicSubnetId2:
+    Type: AWS::EC2::Subnet::Id
+    Description: Second public subnet (in a different AZ) for RDS
   InstanceType:
     Type: String
     Default: t3.medium
@@ -121,7 +124,7 @@ Resources:
       DBSubnetGroupDescription: Subnet group for SonarQube RDS
       SubnetIds:
         - !Ref PublicSubnetId
-        - !Ref PublicSubnetId # Use same public subnet for simplicity
+        - !Ref PublicSubnetId2 # Second subnet in a different AZ
       Tags:
         - Key: Name
           Value: sonarqube-rds-subnet-group
@@ -148,11 +151,11 @@ Resources:
       VPCSecurityGroups:
         - !Ref RDSSecurityGroup
       MultiAZ: false
-      PubliclyAccessible: true # Make RDS publicly accessible
+      PubliclyAccessible: true
       MasterUsername: !Ref DBUsername
       MasterUserPassword: !Join ["", ["{{resolve:secretsmanager:", !Ref RDSSecret, ":SecretString:password}}"]]
-      BackupRetentionPeriod: 7 # Daily backups for 7 days
-      PreferredBackupWindow: "03:00-04:00" # UTC backup window
+      BackupRetentionPeriod: 7
+      PreferredBackupWindow: "03:00-04:00"
       AutoMinorVersionUpgrade: true
       Tags:
         - Key: Name
@@ -178,7 +181,7 @@ Resources:
     Properties:
       InstanceType: !Ref InstanceType
       KeyName: !Ref KeyName
-      ImageId: ami-05ffe3c48a9991133 # Ubuntu 24.04 LTS in us-east-1
+      ImageId: ami-04a81a99f5ec58529
       SubnetId: !Ref PublicSubnetId
       SecurityGroupIds:
         - !Ref EC2SecurityGroup
@@ -194,36 +197,29 @@ Resources:
           apt-get update -y
           apt-get upgrade -y
           apt-get install -y openjdk-17-jdk unzip awscli
-          # Install PostgreSQL client
           sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
           wget -q -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add -
           apt-get update -y
           apt-get install -y postgresql-client
-          # Configure system limits
           echo "vm.max_map_count=262144" >> /etc/sysctl.conf
           echo "fs.file-max=65536" >> /etc/sysctl.conf
           sysctl -p
           echo "* soft nofile 65536" >> /etc/security/limits.conf
           echo "* hard nofile 65536" >> /etc/security/limits.conf
-          # Create SonarQube user
           groupadd sonarqube
           useradd -g sonarqube -d /opt/sonarqube sonarqube
-          # Download and install SonarQube
           cd /opt
           wget https://binaries.sonarsource.com/Distribution/sonarqube/sonarqube-${SonarQubeVersion}.zip
           unzip sonarqube-${SonarQubeVersion}.zip
           mv sonarqube-${SonarQubeVersion} sonarqube
           chown -R sonarqube:sonarqube /opt/sonarqube
-          # Configure SonarQube
           cat << EOF > /opt/sonarqube/conf/sonar.properties
           sonar.web.port=9000
           sonar.jdbc.username=${DBUsername}
           sonar.jdbc.password=$(aws secretsmanager get-secret-value --secret-id ${RDSSecret} --query SecretString --output text | jq -r .password)
           sonar.jdbc.url=jdbc:postgresql://${RDSInstance.Endpoint.Address}:5432/${DBName}
           EOF
-          # Set SonarQube to run as sonarqube user
           sed -i 's/#RUN_AS_USER=/RUN_AS_USER=sonarqube/' /opt/sonarqube/bin/linux-x86-64/sonar.sh
-          # Create systemd service
           cat << EOF > /etc/systemd/system/sonarqube.service
           [Unit]
           Description=SonarQube service
@@ -240,7 +236,6 @@ Resources:
           [Install]
           WantedBy=multi-user.target
           EOF
-          # Start SonarQube service
           systemctl daemon-reload
           systemctl enable sonarqube
           systemctl start sonarqube
